@@ -65,6 +65,13 @@ public final class Constants {
          * If the robot over-rotates, decrease this; if it under-rotates, increase it.
          */
         public static final double kAutoTurnDistanceScalar = 0.125;
+
+        // angular placeholders - update after running sysid with gyro
+       public static final double kDriveBase_kVAngular = 1.6; // or 1.6 to account for missing kS
+       public static final double kDriveBase_kAAngular = 0.25; // 0.25
+
+
+
     }
 
     public static class IOConstants {

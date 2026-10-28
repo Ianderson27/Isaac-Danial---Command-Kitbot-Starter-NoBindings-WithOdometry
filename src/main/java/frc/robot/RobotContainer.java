@@ -6,6 +6,8 @@ package frc.robot;
 
 import frc.robot.Constants.OperatorConstants;
 import frc.robot.commands.Autos;
+import frc.robot.commands.Turn;
+import frc.robot.commands.trajectorys;
 import frc.robot.subsystems.DriveSubsystem;
 import frc.robot.subsystems.Flywheel;
 import frc.robot.subsystems.IntakeClass;
@@ -67,7 +69,11 @@ public class RobotContainer {
      * @return the command to run in autonomous
      */
     public Command getAutonomousCommand() {
-        return Autos.driveDistance(m_driveSubsystem);
+        //return Autos.driveDistance(m_driveSubsystem);
+
+        
+        return(new trajectorys(m_driveSubsystem));
+
     }
     
 }

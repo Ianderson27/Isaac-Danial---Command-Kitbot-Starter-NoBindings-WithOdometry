@@ -13,15 +13,24 @@ import com.revrobotics.spark.SparkMax;
 import com.revrobotics.spark.config.SparkMaxConfig;
 import com.revrobotics.PersistMode;
 import com.revrobotics.ResetMode;
+import com.revrobotics.sim.SparkMaxSim;
 import com.revrobotics.spark.SparkLowLevel.MotorType;
 
 import edu.wpi.first.epilogue.Logged;
+import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.controller.SimpleMotorFeedforward;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.kinematics.DifferentialDriveOdometry;
 import edu.wpi.first.math.kinematics.DifferentialDriveWheelSpeeds;
+import edu.wpi.first.math.numbers.N2;
+import edu.wpi.first.math.system.LinearSystem;
+import edu.wpi.first.math.system.plant.DCMotor;
+import edu.wpi.first.math.system.plant.LinearSystemId;
+import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.drive.DifferentialDrive;
+import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim;
+import edu.wpi.first.wpilibj.simulation.RoboRioSim;
 import edu.wpi.first.wpilibj.smartdashboard.Field2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -29,17 +38,21 @@ import edu.wpi.first.wpilibj2.command.SubsystemBase;
 
 import com.ctre.phoenix6.hardware.CANcoder;
 import com.ctre.phoenix6.hardware.Pigeon2;
+import com.ctre.phoenix6.sim.CANcoderSimState;
+import com.ctre.phoenix6.sim.Pigeon2SimState;
 
 @Logged(strategy = Logged.Strategy.OPT_IN)
 public class DriveSubsystem extends SubsystemBase {
     // --- motors ---
-    private final SparkMax m_leftLeader;
-    private final SparkMax m_leftFollower;
-    private final SparkMax m_rightLeader;
-    private final SparkMax m_rightFollower;
+    private final SparkMax m_leftLeader =  new SparkMax(kLeftLeaderId, MotorType.kBrushed);;
+    private final SparkMax m_leftFollower = new SparkMax(kLeftFollowerId, MotorType.kBrushed);
+    private final SparkMax m_rightLeader = new SparkMax(kRightLeaderId, MotorType.kBrushed);
+    private final SparkMax m_rightFollower = new SparkMax(kRightFollowerId, MotorType.kBrushed);
+
+
 
     // --- Differential Drive subsystem 
-    private final DifferentialDrive m_differentialDrive;
+    public final DifferentialDrive m_differentialDrive;
 
     // --- Encoders ---
     private final CANcoder m_rightEncoder;
@@ -60,14 +73,39 @@ public class DriveSubsystem extends SubsystemBase {
 
     private final Field2d m_field = new Field2d(); // field object for display
 
+    // --- Simulation setup ---
+   private final LinearSystem<N2, N2, N2> m_drivetrainSystem =
+     LinearSystemId.identifyDrivetrainSystem(
+       kDriveBase_kV, kDriveBase_kA,
+       kDriveBase_kVAngular, kDriveBase_kAAngular,
+       kDriveTrackWidthMeters);
+
+
+   private final DifferentialDrivetrainSim m_drivetrainSimulator =
+       new DifferentialDrivetrainSim(
+           m_drivetrainSystem,
+           DCMotor.getCIM(2),
+           kDriveGearRatio,
+           kDriveTrackWidthMeters,
+           kWheelDiameterMeters/2.0,
+           null);
+
+
+   // handles:  both leaders needs a SparkMaxSim, even though nothing reads
+   // their positions, because iterate is what refreshed getAppliedOutput()
+   private final SparkMaxSim m_leftLeaderSim = new SparkMaxSim(m_leftLeader, DCMotor.getCIM(2));
+   private final SparkMaxSim m_rightLeaderSim = new SparkMaxSim(m_rightLeader, DCMotor.getCIM(2));
+   private CANcoderSimState m_rightEncoderSim;
+   private Pigeon2SimState m_gyroSim;
+
+
+
+
     /** Creates a new DriveSubsystem, configuring the KitBot's differential drivetrain motors and right-side CANcoder. */
     public DriveSubsystem() {
 
         // Create brushed motors for a KitBot-style CIM drivetrain
-        m_leftLeader = new SparkMax(kLeftLeaderId, MotorType.kBrushed);
-        m_leftFollower = new SparkMax(kLeftFollowerId, MotorType.kBrushed);
-        m_rightLeader = new SparkMax(kRightLeaderId, MotorType.kBrushed);
-        m_rightFollower = new SparkMax(kRightFollowerId, MotorType.kBrushed);
+
 
 
         // Left leader: invert so that positive values drive both sides forward
@@ -112,6 +150,14 @@ public class DriveSubsystem extends SubsystemBase {
         m_differentialDrive = new DifferentialDrive(m_leftLeader, m_rightLeader);
 
         SmartDashboard.putData("Field", m_field);
+
+
+        // simulation
+        if (RobotBase.isSimulation()) {
+           m_rightEncoderSim = m_rightEncoder.getSimState();
+           m_gyroSim = m_pigeon2.getSimState();
+       }
+
     }
 
     // ----------- Driving Commands --------------
@@ -227,6 +273,29 @@ public class DriveSubsystem extends SubsystemBase {
         m_virtualLeftDistanceMeters = 0.0;
     }
 
+    /**
+     * Resets position for odometry
+     * @return
+     */
+    public void resetPose(Pose2d pose) {
+         m_odometry.resetPosition(
+        m_pigeon2.getRotation2d(), // Gyro heading
+        m_virtualLeftDistanceMeters, // Left encoder position
+        m_lastRightDistanceMeters, // Right encoder position
+      pose
+  );
+}
+    /** Drives the robot given target wheel speeds in meters per second. */
+    public void driveWheelSpeeds(double leftMetersPerSec, double rightMetersPerSec) {
+        double kMaxSpeedMetersPerSec = 3.0; // Estimate or measure top physical robot speed
+        // Convert meters/sec to motor percent output (-1.0 to +1.0)
+        double leftPercent = MathUtil.clamp(leftMetersPerSec / kMaxSpeedMetersPerSec, -1.0, 1.0);
+        double rightPercent = MathUtil.clamp(rightMetersPerSec / kMaxSpeedMetersPerSec, -1.0, 1.0);
+        // Set motor controller outputs directly or call tank drive
+        m_leftLeader.set(leftPercent);
+        m_rightLeader.set(rightPercent);
+}
+
 
     // ------------ Feedforward Control and Testing ----------------- 
      /* Helper methods for setting drive commands in meters per second */
@@ -318,11 +387,50 @@ public class DriveSubsystem extends SubsystemBase {
         m_field.setRobotPose(m_odometry.getPoseMeters()); // estimate
     }
 
-    @Override
-    public void simulationPeriodic() {
-    // This method will be called once per scheduler run during simulation
-    }
 
+
+    @Override
+     public void simulationPeriodic() {
+     // This method will be called once per scheduler run during simulation
+       double batteryVoltage = RoboRioSim.getVInVoltage();
+       m_rightEncoderSim.setSupplyVoltage(batteryVoltage);
+       m_gyroSim.setSupplyVoltage(batteryVoltage);
+
+
+       // Step 1: determine voltages from applied duty cycle:
+       // duty cycle is fraction of battery voltage
+       double leftVolts = m_leftLeader.getAppliedOutput() * batteryVoltage;
+       double rightVolts = m_rightLeader.getAppliedOutput() * batteryVoltage;
+
+
+       // update state space model
+       m_drivetrainSimulator.setInputs(leftVolts, rightVolts);
+       m_drivetrainSimulator.update(0.02); // 50 Hz
+
+
+        // sparkmax internal encoder is rotor side
+       m_leftLeaderSim.iterate(mpsToMotorRpm(m_drivetrainSimulator.getLeftVelocityMetersPerSecond()),
+                         batteryVoltage, 0.020);
+       m_rightLeaderSim.iterate(mpsToMotorRpm(m_drivetrainSimulator.getRightVelocityMetersPerSecond()),
+                          batteryVoltage, 0.020);
+
+
+       // cancoders on axel
+       m_rightEncoderSim.setRawPosition(
+           m_drivetrainSimulator.getRightPositionMeters() / kDistancePerRotationMeters);
+
+
+       m_rightEncoderSim.setVelocity(
+           m_drivetrainSimulator.getRightVelocityMetersPerSecond() / kDistancePerRotationMeters);
+
+
+       m_gyroSim.setRawYaw(m_drivetrainSimulator.getHeading().getDegrees());
+
+
+       // get the simulated robot pose from the simulation
+       // Use to verify the odometry estimates via simulation
+       //m_field.getObject("Simulation model").setPose(m_drivetrainSimulator.getPose());
+   }
 
    
 }

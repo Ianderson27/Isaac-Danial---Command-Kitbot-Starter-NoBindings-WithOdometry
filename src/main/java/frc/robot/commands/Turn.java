@@ -23,9 +23,10 @@ public class Turn extends Command {
    * @param subsystem The subsystem used by this command.
    */
 
-    private final double m_kP = 0.02;
+    private final double m_kP = 0.01;
     private final double m_maxTurnSpeed = 1;
     private final double m_toleranceDegrees = 2.0;
+    private final double m_minTurnSpeed = 0.1;
 
 
   double heading;
@@ -49,13 +50,23 @@ public class Turn extends Command {
 
     double headingError = MathUtil.inputModulus((heading-currentHeading),-180,180);
 
-    final double distance = MathUtil.clamp(headingError,-m_maxTurnSpeed, m_maxTurnSpeed);
+    double distance =  MathUtil.clamp(headingError * m_kP,-m_maxTurnSpeed, m_maxTurnSpeed);
 
-    SmartDashboard.putNumber("Current distance", distance);
+    if (distance > 0 && distance < m_minTurnSpeed){
+        distance = m_minTurnSpeed;
+    }
+    else if(distance < 0 && distance > - m_minTurnSpeed){ 
+        distance = (- m_minTurnSpeed);
+    }
+
+    final double distanceFinal = distance;
+
+
+    SmartDashboard.putNumber("Current speede", distance);
     SmartDashboard.putNumber("Current heading", currentHeading);
     SmartDashboard.putNumber("target heading", heading);
 
-    m_drive.m_differentialDrive.arcadeDrive( 0,  distance);
+    m_drive.m_differentialDrive.arcadeDrive( 0,  distanceFinal);
     
   }
 
@@ -71,9 +82,9 @@ public class Turn extends Command {
   public boolean isFinished() {
     double currentHeading = m_drive.getPose().getRotation().getDegrees();
 
-    double headingError = MathUtil.inputModulus((currentHeading - heading),-180,180);
+    double headingError = Math.abs(MathUtil.inputModulus((currentHeading - heading),-180,180));
 
-    if(headingError == 0){
+    if(headingError < m_toleranceDegrees){
         return true;
     }
     else{
